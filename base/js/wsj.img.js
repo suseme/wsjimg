@@ -1,0 +1,4 @@
+;( function( $ ) {
+		$('.swipebox').swipebox(
+		);
+	} )( jQuery );
