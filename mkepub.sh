@@ -202,7 +202,7 @@ function epub()
 
 function gen_default_page()
 {
-	DFT=${PWD}/"default.html"
+	DFT=${ROOT}/"default.html"
 
 	HEADER=`cat<<!
 <?xml version="1.0" encoding="UTF-8" ?>
@@ -211,9 +211,9 @@ function gen_default_page()
 <head>
 <meta http-equiv="content-type" content="application/xhtml+xml; charset=utf-8" />
 <title>wsj.img</title>
-<link rel="stylesheet" href="base/css/jquery.mobile-1.4.5.min.css">
-<script src="base/js/jquery-2.1.3.min.js"></script>
-<script src="base/js/jquery.mobile-1.4.5.min.js"></script>
+<link rel="stylesheet" href="assets/css/jquery.mobile-1.4.5.min.css">
+<script src="assets/js/jquery-2.1.3.min.js"></script>
+<script src="assets/js/jquery.mobile-1.4.5.min.js"></script>
 </head>
 <body>
 <ul data-role="listview">
@@ -227,17 +227,43 @@ function gen_default_page()
 	echo ${HEADER} > ${DFT}
 	
 	for d in $(ls -r -X ${ROOT}); do
-		# echo ${d} 
-		echo "<li data-role="list-divider">${d}</li>" >> ${DFT}
-		cd ${ROOT}/${d}
-		for f in $(ls *.html); do
-			# echo ${f}
-			echo "<li><a href="dat/${d}/${f}" target=\"blank\">${f}</a></li>" >> ${DFT}
-		done
-		cd ${PWD}
+		case ${d} in
+			"assets")
+				echo "ASSETS"
+				;;
+			"default.html")
+				echo ${d}
+				;;
+			*)
+				echo "<li data-role="list-divider">${d}</li>" >> ${DFT}
+				cd ${ROOT}/${d}
+				for f in $(ls *.html); do
+					# echo ${f}
+					echo "<li><a href="dat/${d}/${f}" target=\"blank\">${f}</a></li>" >> ${DFT}
+				done
+				cd ${PWD}
+				;;
+		esac
 	done
 	
 	echo ${FOODER} >> ${DFT}
+}
+
+function clean()
+{
+	for d in $(ls -r -X ${ROOT}); do
+		if [ ${d} = "assets" ]; then
+			echo "ASSETS"
+		else
+			echo "clean ${d}"
+			cd ${ROOT}/${d}
+			rm default.html
+			rm img -rf
+			rm css -rf
+			rm js -rf
+			cd ${PWD}
+		fi
+	done
 }
 
 case $1 in
@@ -249,6 +275,9 @@ case $1 in
 		;;
 	dft)
 		gen_default_page
+		;;
+	cln)
+		clean
 		;;
 	*)
 		echo $1

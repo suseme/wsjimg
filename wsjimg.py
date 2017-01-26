@@ -1,12 +1,11 @@
 ﻿# # # #!/usr/bin/python
 
-import sys, re, os, shutil, traceback, json, platform
+import sys, re, os, shutil, traceback, json, platform, threading, logging
 from bs4 import BeautifulSoup
 from datetime import *
 from urlparse import urlparse
 
 from pyvin.spider import Spider, Persist, SpiderSoup
-from pyvin.core import Log
 from persist import WsjPersist
 
 reload(sys)
@@ -15,31 +14,34 @@ sys.setdefaultencoding('utf8')
 page_charset = 'GB2312'
 
 
-def dateFromStr(strDate = '', strFmt='%Y%m%d'):
+def dateFromStr(strDate = '', strFmt='%Y%m%d', log=None):
     try:
         ddTT = datetime.strptime(strDate, strFmt)
         dd = ddTT.date()
         return dd
     except:
-        print 'invalid date string %s ' % strDate
         traceback.print_exc()
+        if log:
+            log.warning('invalid date string %s ' % strDate)
+            log.exception(traceback.format_exc())
 
-def checkDate(strDate, strStart='', strEnd=''):
+def checkDate(strDate, strStart='', strEnd='', log=None):
     # print 'date: [%s]' % strDate
     # print 'strStart: [%s]' % strStart
     # print 'strEnd: [%s]' % strEnd
     if len(strStart) > 0:
-        dStart = dateFromStr(strStart)
+        dStart = dateFromStr(strStart, log=log)
     else:
         dStart = date.min
 
     # until today
     if len(strEnd) > 0:
-        dEnd = dateFromStr(strEnd)
+        dEnd = dateFromStr(strEnd, log=log)
     else:
         dEnd = date.today()
 
-    dDate = dateFromStr(strDate)
+    dDate = dateFromStr(strDate, log=log)
+
     return (dDate >= dStart and dDate <= dEnd)
 
 def parseUrl(url):
@@ -70,19 +72,44 @@ class WsjImg:
     DIR_IMG = 'img'
 
     def __init__(self, start='', end=''):
-        self.TAG = WsjImg.__name__
+        # logging.basicConfig(
+        #     format='%(asctime)s:%(filename)s[line:%(lineno)d] %(levelname)s %(message)s',
+        #     datefmt='%a, %d %b %Y %H:%M:%S',
+        #     filename=os.path.join(os.getcwd(),'log.txt')
+        #
+        # )
+        self.log = logging.getLogger(WsjImg.__name__)
+        self.log.setLevel(logging.INFO)
+        formatStr = '%(asctime)s %(filename)s:%(lineno)d %(levelname)s %(message)s'
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        console.setFormatter(logging.Formatter(formatStr))
+        self.log.addHandler(console)
+        filelogger = logging.FileHandler('log-1.txt', 'a')
+        filelogger.setLevel(logging.INFO)
+        filelogger.setFormatter(logging.Formatter(formatStr))
+        self.log.addHandler(filelogger)
+
         self.init_date(start, end)
-        self.db = WsjPersist()
+
+        # self.db = WsjPersist()
+        self.lock = threading.Lock()
 
         self.callbacks = {
                 'http://cn.wsj.com/gb/pho.asp': self.find_links, 
                 'http://cn.wsj.com/gb/20': self.parse_page,
                 'http://cn.wsj.com/pictures/photo/': self.save_img
         }
-        self.spider = Spider('WsjImg')
-        self.spider.set_proxy('proxy-amer.delphiauto.net:8080', 'rzfwch', '8ik,mju7')
+        self.spider = Spider('WsjImg', log=self.log)
+        self.spider.bind(Spider.EVT_ON_ADD_URL, self.on_add_url)
+        self.spider.bind(Spider.EVT_ON_REMOVE_URL, self.on_remove_url)
+        self.spider.bind(Spider.EVT_ON_URL_ERR, self.on_err_url)
+        self.spider.set_proxy('server:8080', 'username', 'password')
         self.spider.add_callbacks(self.callbacks)
         self.spider.add_urls(self.starts)
+        self.spider.set_max_thread(20)
+
+        self.log.info('Started...')
         self.spider.start()
 
     def init_date(self, strStart='', strEnd=''):
@@ -92,18 +119,21 @@ class WsjImg:
 
     def find_links(self, url, response):
         '''Parse the photos news default page and find photos news page urls'''
-        Log.i(self.TAG, 'find links in %s' % url)
-        links = ImgPageLinks(response, self.strStart, self.strEnd)
+        self.log.info('find links in %s' % url)
+        links = ImgPageLinks(response, self.strStart, self.strEnd, log=self.log)
         urls = links.getLinks(response)
-        # urls = links.persistToDB(self.db)
         self.spider.add_urls(urls)
+
+        self.lock.acquire()
+        # links.persistToDB(self.db)
+        self.lock.release()
 
     def parse_page(self, url, response):
         '''Parse photos news page, find content and image urls, also with other photos news page urls.'''
         # find img page links
         self.find_links(url, response)
         # process image page.
-        imgPage = ImgPage(url, response)
+        imgPage = ImgPage(url, response, log=self.log)
         imgPage.clear()
         imgPage.parseImgUrls()
         if len(imgPage.imgUrls.keys()) > 1:
@@ -112,8 +142,10 @@ class WsjImg:
             with open(os.path.join(WsjImg.DIR_ROOT, imgPage.data['path']), 'w') as f:
                 f.write(json.dumps(imgPage.data))
 
-            imgPage.persistToDB(self.db)
-            self.db.updateArt(url, imgPage.title, imgPage.summary)
+            self.lock.acquire()
+            # imgPage.persistToDB(self.db)
+            # self.db.updateArt(url, imgPage.title, imgPage.summary)
+            self.lock.release()
 
             # save imgs of the page
             self.save_imgs(imgPage)
@@ -121,25 +153,38 @@ class WsjImg:
             # copy base files to here
             # os.system('cp -a %s/* %s/' % (WsjImg.dir_base, os.path.join(WsjImg.dir_root, page_date)))
 
-            self.spider.fetch.copyall(WsjImg.DIR_BASE, os.path.join(WsjImg.DIR_ROOT, imgPage.pageDate))
+            # self.spider.fetch.copyall(WsjImg.DIR_BASE, os.path.join(WsjImg.DIR_ROOT, imgPage.pageDate))
         else:
-            print 'no link find in %s' % url
+            self.log.warning('no link find in %s' % url)
 
     def save_img(self, url, response):
-        print 'ignore %s' % url
+        self.log.info('ignore %s' % url)
 
     def save_imgs(self, imgPage):
         for url in imgPage.imgUrls.keys():
             dstfile = os.path.join(WsjImg.DIR_ROOT, imgPage.imgUrls[url]['path'])
             self.spider.download(url, dstfile)
 
+    def on_add_url(self, event, url):
+        os.system('echo %s >> queued.txt' % url)
+
+    def on_remove_url(self, event, url):
+        os.system('echo %s >> finished.txt' % url)
+
+    def on_err_url(self, event, url):
+        self.log.warning('Grasp %s failed' % url)
+
 class ImgPageLinks:
     '''Find photos news page urls'''
     KEY_URL = 'url'
     KEY_DATE = 'date'
 
-    def __init__(self, page, strStart, strEnd):
-        print '[ImgPageLinks]'
+    def __init__(self, page, strStart, strEnd, log=None):
+        if log:
+            self.log = log
+        else:
+            self.log = logging.getLogger(ImgPageLinks.__name__)
+        self.log.info('[ImgPageLinks]')
         # self.soup = BeautifulSoup(page, from_encoding=page_charset)
         self.strStart = strStart
         self.strEnd = strEnd
@@ -159,13 +204,13 @@ class ImgPageLinks:
             strDate = p.findall(url)[0]
             # print strDate
             del(self.links[url])
-            if (checkDate(strDate, self.strStart, self.strEnd)):
+            if (checkDate(strDate, self.strStart, self.strEnd, log=self.log)):
                 url = '%s%s' % (WsjImg.page_root, url)
                 self.links[url] = {}
                 self.links[url][ImgPageLinks.KEY_DATE] = strDate
                 self.links[url][ImgPageLinks.KEY_URL] = url
             else:
-                print 'skip %s' % url
+                self.log.info('skip %s' % url)
         # print self.links
         return self.links.keys()
 
@@ -180,9 +225,13 @@ class ImgPageLinks:
 
 class ImgPage:
     '''Parse photos news page, get content and image urls'''
-    def __init__(self, url, page):
-        print '[ImgPage]'
-        print url
+    def __init__(self, url, page, log=None):
+        if log:
+            self.log = log
+        else:
+            self.log = logging.getLogger(ImgPage.__name__)
+        self.log.info('[ImgPage]')
+        # print url
         # print page
         self.url = url
         self.soup = BeautifulSoup(page, "html5lib", from_encoding=page_charset)
@@ -227,6 +276,16 @@ class ImgPage:
                     self.data['imgs'].append(self.imgUrls[url])
         return self.imgUrls.keys()
 
+    def parse(self):
+        ul_node = self.soup.find('ul', attrs={'data-role':'listview'})
+        li_nodes = ul_node.findAll('li')
+        for li_node in li_nodes:
+            img_node = li_node.find('img')
+            # print img_node['src']
+            div_node = li_node.find('div')
+            # print div_node.find('p').text
+            # print div_node.find('samp').text
+
     # clear no used tags
     def clear(self):
         # find summary
@@ -251,14 +310,14 @@ class ImgPage:
         SpiderSoup.clearNode(self.soup, 'meta', {'name': 'keywords'})
         SpiderSoup.clearNode(self.soup, 'meta', {'name': 'description'})
         # set css
-        SpiderSoup.insertCss(self.soup, "css/jquery.mobile-1.4.5.min.css")
-        SpiderSoup.insertCss(self.soup, "css/swipebox.css")
-        SpiderSoup.insertCss(self.soup, "css/wsj.img.css")
+        SpiderSoup.insertCss(self.soup, "../assets/css/jquery.mobile-1.4.5.min.css")
+        SpiderSoup.insertCss(self.soup, "../assets/css/swipebox.css")
+        SpiderSoup.insertCss(self.soup, "../assets/css/wsj.img.css")
         # set script
-        SpiderSoup.insertScript(self.soup, "js/jquery-2.1.3.min.js")
-        SpiderSoup.insertScript(self.soup, "js/jquery.mobile-1.4.5.min.js")
-        SpiderSoup.insertScript(self.soup, "js/jquery.swipebox.js")
-        SpiderSoup.insertScript(self.soup, "js/wsj.img.js")
+        SpiderSoup.insertScript(self.soup, "../assets/js/jquery-2.1.3.min.js")
+        SpiderSoup.insertScript(self.soup, "../assets/js/jquery.mobile-1.4.5.min.js")
+        SpiderSoup.insertScript(self.soup, "../assets/js/jquery.swipebox.js")
+        SpiderSoup.insertScript(self.soup, "../assets/js/wsj.img.js")
 
         # add ul
         ul_tag = self.soup.new_tag("ul")
@@ -303,6 +362,6 @@ if __name__ == "__main__":
         sStart = sys.argv[1]
         sEnd = sys.argv[2]
 
-    print "get [%s ~ %s]" % (sStart, sEnd)
+    logging.info("get [%s ~ %s]" % (sStart, sEnd))
 
     wsj = WsjImg(start=sStart, end=sEnd)
