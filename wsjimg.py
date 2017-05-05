@@ -13,47 +13,18 @@ sys.setdefaultencoding('utf8')
 
 page_charset = 'GB2312'
 
-
-def dateFromStr(strDate = '', strFmt='%Y%m%d', log=None):
-    try:
-        ddTT = datetime.strptime(strDate, strFmt)
-        dd = ddTT.date()
-        return dd
-    except:
-        traceback.print_exc()
-        if log:
-            log.warning('invalid date string %s ' % strDate)
-            log.exception(traceback.format_exc())
-
-def checkDate(strDate, strStart='', strEnd='', log=None):
-    # print 'date: [%s]' % strDate
-    # print 'strStart: [%s]' % strStart
-    # print 'strEnd: [%s]' % strEnd
-    if len(strStart) > 0:
-        dStart = dateFromStr(strStart, log=log)
-    else:
-        dStart = date.min
-
-    # until today
-    if len(strEnd) > 0:
-        dEnd = dateFromStr(strEnd, log=log)
-    else:
-        dEnd = date.today()
-
-    dDate = dateFromStr(strDate, log=log)
-
-    return (dDate >= dStart and dDate <= dEnd)
-
-def parseUrl(url):
-    url = urlparse(url)
-    segs = url.path.split('/')
-    return segs
-
 class WsjImg:
+    proxy_host = ''
+    proxy_user = ''
+    proxy_pass = ''
     site_root = 'http://cn.wsj.com/'
     page_root = 'http://cn.wsj.com/gb/'
     img_root = 'http://cn.wsj.com/pictures/photo/'
-    starts = ['http://cn.wsj.com/gb/pho.asp']
+    starts = [
+        'http://cn.wsj.com/gb/pho.asp',
+        # 'http://cn.wsj.com/gb/20140818/PHO091509.asp',
+        # 'http://cn.wsj.com/gb/20140807/PHO100842.asp'
+        ]
     # starts = ['http://cn.wsj.com/gb/20141230/PHO094555.asp']
     # callbacks = {'http://cn.wsj.com/gb/pho.asp':WsjImg.find_links, 'http://cn.wsj.com/gb/':WsjImg.parse_page, 'http://cn.wsj.com/pictures/photo/':WsjImg.save_img}
 
@@ -104,7 +75,7 @@ class WsjImg:
         self.spider.bind(Spider.EVT_ON_ADD_URL, self.on_add_url)
         self.spider.bind(Spider.EVT_ON_REMOVE_URL, self.on_remove_url)
         self.spider.bind(Spider.EVT_ON_URL_ERR, self.on_err_url)
-        self.spider.set_proxy('server:8080', 'username', 'password')
+        self.spider.set_proxy(WsjImg.proxy_host, WsjImg.proxy_user, WsjImg.proxy_pass)
         self.spider.add_callbacks(self.callbacks)
         self.spider.add_urls(self.starts)
         self.spider.set_max_thread(20)
@@ -204,7 +175,7 @@ class ImgPageLinks:
             strDate = p.findall(url)[0]
             # print strDate
             del(self.links[url])
-            if (checkDate(strDate, self.strStart, self.strEnd, log=self.log)):
+            if (DateUtils.checkDate(strDate, self.strStart, self.strEnd, log=self.log)):
                 url = '%s%s' % (WsjImg.page_root, url)
                 self.links[url] = {}
                 self.links[url][ImgPageLinks.KEY_DATE] = strDate
@@ -239,7 +210,7 @@ class ImgPage:
         self.summary = ''
         self.imgUrls = {}
 
-        segs = parseUrl(url)
+        segs = ImgPage.parseUrl(url)
         self.pageDate = segs[WsjImg.idx_page_date]
         self.filePath = os.path.join(self.pageDate, "%s-%s" % (self.title, segs[WsjImg.idx_page_filename].replace('.asp', '.html')))
 
@@ -270,7 +241,7 @@ class ImgPage:
                     self.imgUrls[url] = {}
                     self.imgUrls[url]['url'] = url
                     self.imgUrls[url]['alt'] = item['alt']
-                    segs = parseUrl(url)
+                    segs = ImgPage.parseUrl(url)
                     self.imgUrls[url]['path'] = os.path.join(self.pageDate, WsjImg.DIR_IMG, segs[WsjImg.idx_img_dir], segs[WsjImg.idx_img_filename])
                     self.imgUrls[url]['src'] = os.path.join(WsjImg.DIR_IMG, segs[WsjImg.idx_img_dir], segs[WsjImg.idx_img_filename])
                     self.data['imgs'].append(self.imgUrls[url])
@@ -350,18 +321,55 @@ class ImgPage:
                 db.addPic(id, self.imgUrls[url]['url'], self.imgUrls[url]['src'], self.imgUrls[url]['alt'])
         db.setArtDownload(self.url)
 
+    @staticmethod
+    def parseUrl(url):
+        return urlparse(url).path.split('/')
+
+class DateUtils:
+
+    @staticmethod
+    def checkDate(strDate, strStart='', strEnd='', log=None):
+        # print 'date: [%s]' % strDate
+        # print 'strStart: [%s]' % strStart
+        # print 'strEnd: [%s]' % strEnd
+
+        dStart = date.min
+        dEnd = date.today()
+
+        if len(strStart) > 0:
+            dStart = DateUtils.dateFromStr(strStart, log=log)
+
+        # until today
+        if len(strEnd) > 0:
+            dEnd = DateUtils.dateFromStr(strEnd, log=log)
+
+        dDate = DateUtils.dateFromStr(strDate, log=log)
+
+        return (dDate >= dStart and dDate <= dEnd)
+
+    @staticmethod
+    def dateFromStr(strDate='', strFmt='%Y%m%d', log=None):
+        '''return date object from string'''
+        try:
+            return datetime.strptime(strDate, strFmt).date()
+        except:
+            traceback.print_exc()
+            if log:
+                log.warning('invalid date string %s ' % strDate)
+                log.exception(traceback.format_exc())
+
 if __name__ == "__main__":
     # print 'wsjimg'
 
-    sStart = ''
-    sEnd = ''
+    dateStart = ''
+    dateEnd = ''
     argc = len(sys.argv)
     if (argc == 2):
-        sStart = sys.argv[1]
+        dateStart = sys.argv[1]
     elif (argc == 3):
-        sStart = sys.argv[1]
-        sEnd = sys.argv[2]
+        dateStart = sys.argv[1]
+        dateEnd = sys.argv[2]
 
-    logging.info("get [%s ~ %s]" % (sStart, sEnd))
+    logging.info("get [%s ~ %s]" % (dateStart, dateEnd))
 
-    wsj = WsjImg(start=sStart, end=sEnd)
+    wsj = WsjImg(start=dateStart, end=dateEnd)
